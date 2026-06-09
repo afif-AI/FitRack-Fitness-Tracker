@@ -32,4 +32,25 @@ All three must sit in the **same folder**.
 - Photos are stored compressed but still use the most space — export after adding them.
 
 ## Tabs
-Today (water/steps/cardio) · Lift (log kg + reps/sets) · Weight (log + chart) · History · Photos · Backup
+
+| Tab | What it does |
+|-----|-------------|
+| **Today** | Water intake, 8-10k steps, energy level (0–5), cardio (type / duration / intensity / run:walk ratio), session notes |
+| **Lift** | Log weight + 3 individual set reps per exercise across 4 sessions (Upper A/B, Lower A/B). After saving, shows next-session progression targets (double progression: 3×10–12, +2.5 kg upper / +5 kg lower when all sets hit 12) |
+| **Weight** | Log bodyweight, progress bar toward goal, trend chart |
+| **History** | All saved lift sessions, newest first |
+| **Check-in** | Weekly Saturday check-in — auto-fills latest weight, sessions this week, avg energy. Add progression notes and copy a formatted summary to clipboard |
+| **Photos** | Progress photos (compressed, stored on device) |
+| **Backup** | Export / import all data as JSON |
+
+## Workout schema
+
+```js
+// Each saved entry (new format)
+{ ex: "Chest press", weight: 50, sets: [{ reps: 12 }, { reps: 11 }, { reps: 10 }] }
+
+// Weekly check-in
+{ week_ending: "YYYY-MM-DD", weight_kg: 85.2, sessions_completed: 3, energy_avg: "3.2", notes: "..." }
+```
+
+Old entries saved as `{ reps: "3x12" }` are automatically migrated to the new format on first load.
