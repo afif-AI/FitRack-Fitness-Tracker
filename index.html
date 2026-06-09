@@ -150,7 +150,8 @@ const I={
   download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
   upload:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
   zap:'<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
-  pencil:'<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>'
+  pencil:'<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>',
+  cal:'<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>'
 };
 const svg=(p,cls="ic")=>`<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
 
@@ -218,6 +219,48 @@ function weights(){return LS.get("weights",[]);}
 function workouts(){return LS.get("workouts",[]);}
 function photos(){return LS.get("photos",[]);}
 
+/* ---------- week helpers ---------- */
+function weekBounds(){
+  const today=new Date(todayStr());
+  const dow=today.getDay();
+  const diffToMon=dow===0?-6:1-dow;
+  const mon=new Date(today);mon.setDate(today.getDate()+diffToMon);
+  const sun=new Date(mon);sun.setDate(mon.getDate()+6);
+  const fmt=d=>d.toLocaleDateString("en-CA");
+  return{weekStart:fmt(mon),weekEnd:fmt(sun)};
+}
+function weeklySessionCount(){
+  const{weekStart,weekEnd}=weekBounds();
+  return workouts().filter(w=>w.date>=weekStart&&w.date<=weekEnd).length;
+}
+function weeklyEnergyAvg(){
+  const{weekStart,weekEnd}=weekBounds();
+  const vals=[];
+  const cur=new Date(weekStart);
+  while(true){
+    const ds=cur.toLocaleDateString("en-CA");
+    if(ds>weekEnd)break;
+    const d=LS.get(`daily:${ds}`);
+    if(d&&d.energy>0)vals.push(d.energy);
+    cur.setDate(cur.getDate()+1);
+  }
+  if(!vals.length)return null;
+  return(vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(1);
+}
+function latestWeight(){const w=weights();return w.length?w[w.length-1].kg:null;}
+
+/* ---------- one-shot schema migration ---------- */
+function migrateWorkouts(){
+  const all=workouts();let changed=false;
+  const migrated=all.map(w=>({...w,entries:w.entries.map(e=>{
+    if(e.sets||!e.reps)return e;
+    const m=e.reps.match(/(\d+)\s*[x×]\s*(\d+)/i);if(!m)return e;
+    changed=true;const r=parseInt(m[2]);
+    return{ex:e.ex,weight:parseFloat(e.weight)||null,sets:[{reps:r},{reps:r},{reps:r}]};
+  })}));
+  if(changed)LS.set("workouts",migrated);
+}
+
 /* ---------- today updaters ---------- */
 window.waterAdj=n=>{
   const d=daily();
@@ -251,7 +294,7 @@ window.setEnergy=n=>{
 window.setCardioIntensity=intensity=>{
   const d=daily();
   saveDaily({cardio:{...d.cardio,intensity}});
-  document.querySelectorAll(".intensity-btn").forEach(el=>{
+  document.querySelectorAll(".intensity-btn[data-val]").forEach(el=>{
     el.className="intensity-btn"+(el.dataset.val===intensity?` on-${intensity}`:"");
   });
 };
@@ -265,6 +308,12 @@ window.setCardioDuration=el=>{
 window.setCardioRatio=el=>{
   const d=daily();
   saveDaily({cardio:{...d.cardio,run_ratio:el.value||null}});
+};
+
+window.setCardioType=v=>{
+  const d=daily();
+  saveDaily({cardio:{...d.cardio,type:v}});
+  renderToday();
 };
 
 window.setNotes=el=>{
@@ -329,6 +378,17 @@ function renderToday(){
 
       ${cd.done?`
       <div class="cardio-detail">
+
+        <!-- Type -->
+        <div>
+          <span class="field-label">Type</span>
+          <div class="intensity-row">
+            <button class="intensity-btn ${cd.type==='run/walk'?'on-easy':''}"
+              onclick="setCardioType('run/walk')">Run / Walk</button>
+            <button class="intensity-btn ${cd.type==='other'?'on-moderate':''}"
+              onclick="setCardioType('other')">Other</button>
+          </div>
+        </div>
 
         <!-- Duration -->
         <div>
@@ -623,12 +683,113 @@ window.importData=inp=>{
   r.readAsText(f);
 };
 
+/* ---------- render: CHECK-IN ---------- */
+function renderCheckin(){
+  const{weekEnd}=weekBounds();
+  const checkins=LS.get("weekly_checkins",[]);
+  const existing=checkins.find(c=>c.week_ending===weekEnd);
+  const wKg=latestWeight(),sess=weeklySessionCount(),energy=weeklyEnergyAvg();
+  const notes=existing?(existing.notes||''):'';
+  view().innerHTML=`
+  <div class="stack">
+    <div class="card">
+      <div class="flex" style="color:var(--lime);margin-bottom:12px">
+        ${svg(I.cal,'ic')}<span class="label">Week ending ${weekEnd}</span>
+      </div>
+      <div class="hist-line" style="padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="color:var(--ink3)">Latest weight</span>
+        <span class="mono">${wKg!==null?wKg+' kg':'—'}</span>
+      </div>
+      <div class="hist-line" style="padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="color:var(--ink3)">Sessions this week</span>
+        <span class="mono">${sess}</span>
+      </div>
+      <div class="hist-line" style="padding:6px 0">
+        <span style="color:var(--ink3)">Avg energy</span>
+        <span class="mono">${energy!==null?energy+' / 5':'—'}</span>
+      </div>
+    </div>
+    <div class="card" style="padding:16px 20px">
+      <div class="flex" style="color:var(--ink3);margin-bottom:8px">
+        ${svg(I.pencil,'ic')}<span class="label">Progression notes</span>
+      </div>
+      <textarea class="notes-area" id="checkinNotes" style="height:96px"
+        placeholder="e.g. Chest press went up 2.5kg. Endurance improving…">${notes}</textarea>
+    </div>
+    <button class="save" onclick="saveCheckin()">${svg(I.save,'ic')} SAVE CHECK-IN</button>
+    <button class="save" style="background:var(--card);border:1px solid var(--border);color:var(--ink)"
+      onclick="copyCheckin()">${svg(I.download,'ic')} COPY FOR SATURDAY</button>
+    <div id="checkinHistory"></div>
+  </div>`;
+  renderCheckinHistory();
+}
+
+window.saveCheckin=()=>{
+  const{weekEnd}=weekBounds();
+  const entry={
+    week_ending:weekEnd,
+    weight_kg:latestWeight(),
+    sessions_completed:weeklySessionCount(),
+    energy_avg:weeklyEnergyAvg(),
+    notes:(document.getElementById("checkinNotes")||{}).value||''
+  };
+  let all=LS.get("weekly_checkins",[]);
+  const idx=all.findIndex(c=>c.week_ending===weekEnd);
+  if(idx>=0)all[idx]=entry;else all.unshift(entry);
+  LS.set("weekly_checkins",all.slice(0,52));
+  toast("Check-in saved");
+  renderCheckinHistory();
+};
+
+window.copyCheckin=()=>{
+  const{weekEnd}=weekBounds();
+  const wKg=latestWeight(),sess=weeklySessionCount(),energy=weeklyEnergyAvg();
+  const notes=(document.getElementById("checkinNotes")||{}).value||'';
+  const text=[
+    `Week ending: ${weekEnd}`,
+    `Weight: ${wKg!==null?wKg+'kg':'—'}`,
+    `Sessions this week: ${sess}`,
+    `Avg energy: ${energy!==null?energy+'/5':'—'}`,
+    `Notes: ${notes.trim()||'—'}`
+  ].join('\n');
+  navigator.clipboard.writeText(text)
+    .then(()=>toast("Copied to clipboard"))
+    .catch(()=>{
+      const ta=document.createElement("textarea");ta.value=text;
+      ta.style.cssText="position:fixed;opacity:0";document.body.appendChild(ta);
+      ta.select();document.execCommand("copy");ta.remove();toast("Copied");
+    });
+};
+
+function renderCheckinHistory(){
+  const el=document.getElementById("checkinHistory");if(!el)return;
+  const all=LS.get("weekly_checkins",[]);
+  if(!all.length){el.innerHTML='';return;}
+  el.innerHTML=`
+    <div>
+      <div class="label" style="color:var(--ink3);margin-bottom:8px;font-size:.72rem">Past check-ins</div>
+      ${all.map(c=>`
+        <div class="card-sm" style="margin-bottom:8px">
+          <div class="row" style="margin-bottom:6px">
+            <span class="hist-sess">${c.week_ending}</span>
+            <span class="mono" style="font-size:.72rem;color:var(--ink3)">${c.weight_kg!==null?c.weight_kg+' kg':'—'}</span>
+          </div>
+          <div class="hist-line" style="margin-bottom:2px">
+            <span>${c.sessions_completed} session${c.sessions_completed!==1?'s':''}</span>
+            <span>Energy ${c.energy_avg!==null?c.energy_avg+'/5':'—'}</span>
+          </div>
+          ${c.notes?`<div class="note" style="padding-top:4px;color:var(--ink3)">${c.notes.slice(0,120)}${c.notes.length>120?'…':''}</div>`:''}
+        </div>`).join('')}
+    </div>`;
+}
+
 /* ---------- tabs ---------- */
 const TABS=[
   ["today","Today",I.droplet,renderToday],
   ["lift","Lift",I.dumbbell,renderLift],
   ["weight","Weight",I.trend,renderWeight],
   ["history","History",I.check,renderHistory],
+  ["checkin","Check-in",I.cal,renderCheckin],
   ["photos","Photos",I.image,renderPhotos],
   ["settings","Backup",I.save,renderSettings]
 ];
@@ -641,6 +802,7 @@ function render(){renderTabbar();const t=TABS.find(t=>t[0]===tab);(t&&t[3]||rend
 
 /* ---------- init ---------- */
 $("#todayLabel").textContent=todayStr();
+migrateWorkouts();
 render();
 
 if("serviceWorker" in navigator){
