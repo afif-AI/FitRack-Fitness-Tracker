@@ -394,21 +394,78 @@ function renderLift(){
           <div class="ex-cue">${cue}</div>
           <div class="inputs">
             <input inputmode="decimal" placeholder="kg" value="${log[ex]?.weight||''}" oninput="setLog('${ex}','weight',this.value)">
-            <input inputmode="text" placeholder="reps x sets" value="${log[ex]?.reps||''}" oninput="setLog('${ex}','reps',this.value)">
+            <input inputmode="numeric" placeholder="S1" style="text-align:center" value="${log[ex]?.s0||''}" oninput="setLog('${ex}','s0',this.value)">
+            <input inputmode="numeric" placeholder="S2" style="text-align:center" value="${log[ex]?.s1||''}" oninput="setLog('${ex}','s1',this.value)">
+            <input inputmode="numeric" placeholder="S3" style="text-align:center" value="${log[ex]?.s2||''}" oninput="setLog('${ex}','s2',this.value)">
           </div>
         </div>`).join("")}</div>
       <button class="save" onclick="saveWorkout()">${svg(I.save,'ic')} SAVE ${sess.toUpperCase()}</button>
+      <div id="prog-card"></div>
     </div>`;
   view().querySelectorAll(".card-sm").forEach((el,i)=>{if(i>0)el.style.marginTop="8px";});
 }
 window.pickSess=s=>{sess=s;renderLift();};
 window.setLog=(ex,k,v)=>{log[ex]={...(log[ex]||{}),[k]:v};};
 window.saveWorkout=()=>{
-  const entries=SESSIONS[sess].map(([ex])=>({ex,...(log[ex]||{})})).filter(x=>x.weight||x.reps);
+  const entries=SESSIONS[sess].map(([ex])=>{
+    const l=log[ex]||{};
+    const w=l.weight?parseFloat(l.weight):null;
+    const sets=['s0','s1','s2'].map(k=>({reps:l[k]?parseInt(l[k]):null}));
+    if(!w&&sets.every(s=>s.reps===null))return null;
+    return{ex,weight:w,sets};
+  }).filter(Boolean);
   if(!entries.length){toast("Nothing logged");return;}
   const next=[{date:todayStr(),session:sess,entries},...workouts()].slice(0,120);
-  LS.set("workouts",next);log={};renderLift();toast("Saved "+sess);
+  LS.set("workouts",next);
+  const saved=entries;log={};renderLift();toast("Saved "+sess);
+  const targets=computeNextTargets(saved,sess);
+  if(targets.length)renderProgression(targets,sess);
 };
+
+/* ---------- progression ---------- */
+function computeNextTargets(entries,sessionType){
+  const isUpper=["Upper A","Upper B"].includes(sessionType);
+  const inc=isUpper?2.5:5;
+  const noWeight=["Plank","Hanging knee raise"];
+  return entries.filter(e=>e.weight&&!noWeight.includes(e.ex)).map(e=>{
+    const reps=(e.sets||[]).map(s=>s.reps||0);
+    const allHit12=reps.length===3&&reps.every(r=>r>=12);
+    return{
+      ex:e.ex,
+      weight:e.weight,
+      nextWeight:allHit12?+(e.weight+inc).toFixed(2):e.weight,
+      targetReps:allHit12?[10,10,10]:[12,12,12],
+      promoted:allHit12,
+      repsHit:reps
+    };
+  });
+}
+function renderProgression(targets,sessionType){
+  const el=document.getElementById('prog-card');
+  if(!el||!targets.length)return;
+  el.innerHTML=`<div class="card" style="border-color:var(--lime-bd);background:var(--lime-dim)">
+    <div style="color:var(--lime);font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px">Next ${sessionType} targets</div>
+    ${targets.map(t=>{
+      const rStr=t.repsHit.length?t.repsHit.join(', '):'–';
+      const aStr=t.targetReps.join(', ');
+      return t.promoted
+        ?`<div style="padding:6px 0;border-bottom:1px solid rgba(163,230,53,.15)">
+            <div style="display:flex;justify-content:space-between;align-items:baseline">
+              <span style="font-size:.82rem;font-weight:600;color:var(--ink)">${t.ex}</span>
+              <span class="mono" style="font-size:.78rem;color:var(--lime);font-weight:700">${t.nextWeight}kg ↑</span>
+            </div>
+            <div style="font-size:.68rem;color:var(--ink3);margin-top:2px">Hit ${rStr} · aim <span class="mono">${aStr}</span> reps</div>
+          </div>`
+        :`<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+            <div style="display:flex;justify-content:space-between;align-items:baseline">
+              <span style="font-size:.82rem;color:var(--ink2)">${t.ex}</span>
+              <span class="mono" style="font-size:.78rem;color:var(--ink2)">${t.nextWeight}kg</span>
+            </div>
+            <div style="font-size:.68rem;color:var(--ink4);margin-top:2px">Got ${rStr} · aim <span class="mono">${aStr}</span> reps</div>
+          </div>`;
+    }).join('')}
+  </div>`;
+}
 
 /* ---------- render: WEIGHT ---------- */
 function renderWeight(){
@@ -473,7 +530,7 @@ function renderHistory(){
         <span class="hist-sess">${x.session}</span>
         <span class="mono" style="font-size:.72rem;color:var(--ink3)">${x.date}</span>
       </div>
-      ${x.entries.map(e=>`<div class="hist-line"><span>${e.ex}</span><span class="mono">${e.weight||'–'}kg · ${e.reps||'–'}</span></div>`).join("")}
+      ${x.entries.map(e=>{const rs=e.sets?e.sets.filter(s=>s&&s.reps).map(s=>s.reps).join(','):(e.reps||'–');return`<div class="hist-line"><span>${e.ex}</span><span class="mono">${e.weight||'–'}kg · ${rs}</span></div>`;}).join("")}
     </div>`).join("")
   }</div>`;
   view().querySelectorAll("#histStack > *").forEach((el,i)=>{if(i>0)el.style.marginTop="8px";});
