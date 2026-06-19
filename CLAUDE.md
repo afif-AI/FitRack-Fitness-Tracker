@@ -24,7 +24,8 @@ localStorage only via `LS` helper object:
 | `workouts` | Array | `{date, session, entries[]}[]` |
 | `photos` | Array | `{date, dataURL}[]` |
 | `weekly_checkins` | Array | `{week_ending, weight_kg, sessions_completed, energy_avg, notes}[]` max 52 |
-| `body_comp_scans` | Array | `{date, body_fat_pct, visceral_fat_level, muscle_kg, notes}[]` ← **planned, not yet implemented** |
+| `body_comp_scans` | Array | `{date, body_fat_pct, visceral_fat_level, muscle_kg, notes}[]` (upsert by date) |
+| `lift_draft` | Object | `{sess, log}` — in-progress lift inputs, auto-saved per keystroke, cleared on SAVE |
 
 ### Daily object schema
 ```js
@@ -45,13 +46,19 @@ localStorage only via `LS` helper object:
 
 ### Workout entry schema (CURRENT)
 ```js
-{ ex: "Chest press", weight: 50, sets: [{reps:12},{reps:12},{reps:12}] }
+{ ex: "Chest press", weight: 50, sets: [{weight:50,reps:12},{weight:50,reps:12},{weight:52.5,reps:10}] }
 ```
-Old entries `{ ex, weight: "50", reps: "3x12" }` are auto-migrated at boot via `migrateWorkouts()`.
+- Top-level `weight` = the main/shared weight (used by `computeNextTargets` + compact history).
+- Each set carries its own `weight`. The Lift UI has one shared `kg` box; tapping `± per-set kg`
+  reveals optional per-set weight overrides. A set's weight = its override, else the shared weight.
+- History shows compact `50kg · 12,12,10` when all set weights match, else per-set `12@50, 10@52.5`.
+- Old entries `{ ex, weight: "50", reps: "3x12" }` and pre-per-set `sets:[{reps}]` are auto-migrated
+  at boot via `migrateWorkouts()` (backfills `weight` onto each set). Idempotent.
 
 ### Back-compat notes
 - Old cardio was stored as a boolean (`cardio: true/false`). On load, converted to full object with `done` field.
 - Old workout `reps` string format migrated to `sets[]` array by `migrateWorkouts()`. Idempotent.
+- Pre-per-set workouts (`sets:[{reps}]` with no per-set `weight`) get `weight` backfilled from the entry's top-level `weight` by `migrateWorkouts()`. Idempotent.
 
 ### Weekly check-in schema
 ```js
@@ -110,10 +117,17 @@ Lower B: Goblet/Hack squat, Hip thrust, Walking lunge, Leg curl, Seated calf rai
 | `weeklySessionCount()` | Count workouts this week |
 | `weeklyEnergyAvg()` | Average energy > 0 from daily logs this week, returns string or null |
 | `latestWeight()` | Latest kg from weights array, or null |
-| `migrateWorkouts()` | One-shot boot migration: old `{reps:"3x12"}` → `{sets:[…]}`. Idempotent. |
-| `computeNextTargets(entries, sessionType)` | Progression logic per exercise |
+| `migrateWorkouts()` | One-shot boot migration: old `{reps:"3x12"}` → `{sets:[…]}` + per-set `weight` backfill. Idempotent. |
+| `computeNextTargets(entries, sessionType)` | Progression logic per exercise (uses top-level `weight`) |
 | `renderProgression(targets, sessionType)` | Populates `#prog-card` after save |
 | `renderCheckinHistory()` | Partial re-render of `#checkinHistory` in Check-in tab |
+| `saveDraft()` | Persists `{sess, log}` to `lift_draft` (called on every lift keystroke / session switch) |
+| `lineChart(series, {color})` | Generic SVG line chart from `[{label,val}]` (reused by dashboard + body comp) |
+| `barChart(items, {color})` | Generic SVG bar chart from `[{label,val}]` |
+| `sessionsByWeek(n)` | Last `n` Mon–Sun session counts as `[{label,val}]` for the dashboard |
+| `dashboardBlock()` | Weight / sessions / energy trend charts in the Check-in tab |
+| `bodyCompBlock()` / `saveBodyComp()` | Body-comp form + trend charts in the Weight tab; upsert by date into `body_comp_scans` |
+| `bodyComps()` | Reader for `body_comp_scans` |
 
 ## Rules
 - Mobile-first, no desktop-only UI
@@ -127,7 +141,13 @@ Lower B: Goblet/Hack squat, Hip thrust, Walking lunge, Leg curl, Seated calf rai
 1. ✅ **Progression targets** — after saving a lift session, shows next-session targets per exercise. Logic: all 3 sets ≥ 12 reps → +2.5 kg (upper) / +5 kg (lower), reset aim to 10,10,10. Implemented in `computeNextTargets()` + `renderProgression()`.
 2. ✅ **Weekly check-in tab** — `renderCheckin()`. Auto-fills latest weight, sessions this week, avg energy. Manual progression notes. "Copy for Saturday" copies formatted summary to clipboard. Saves to `weekly_checkins` (upsert by `week_ending`, max 52).
 3. ⬜ **Cardio history** — in History tab, below lift history. Show date, type, duration, intensity, run_ratio from daily logs. `cardio.type` is `"run/walk"` or `"other"` (set via UI).
-4. ⬜ **Body comp monthly log** — in Weight tab. Input form: date, body_fat_%, visceral_fat_level, muscle_kg, notes. Charts: body fat % trend + visceral fat trend + muscle mass trend. Stored in `body_comp_scans` key.
+4. ✅ **Body comp monthly log** — in Weight tab (`bodyCompBlock()` + `saveBodyComp()`). Input form: date, body_fat_%, visceral_fat_level, muscle_kg, notes (upsert by date). Charts: body fat % + visceral + muscle trends via `lineChart()`. Stored in `body_comp_scans`.
+
+## Lift draft + dashboard (post-Tier-2 UX)
+- **Lift draft persistence** — lift inputs auto-save to `lift_draft` on every keystroke (`saveDraft()`), restored on boot/render, cleared on SAVE. Navigating away from the Lift tab no longer wipes in-progress entries.
+- **Per-set weight** — see Workout entry schema above (`± per-set kg` override).
+- **Progress dashboard** — `dashboardBlock()` in Check-in tab: weight / sessions-per-week / avg-energy trends.
+- **Today notes** save on `oninput` (as-you-type), not `onchange`.
 
 ## Rep range reference (for progression logic)
 All exercises: 3 sets × 10-12 reps. When all 3 sets hit 12 reps → add weight.

@@ -118,6 +118,20 @@
   .intensity-btn.on-hard{background:rgba(248,113,113,.15);border-color:rgba(248,113,113,.5);color:var(--red)}
   /* notes */
   .notes-area{resize:none;height:60px;font-size:.82rem;line-height:1.5}
+  /* per-set weight override */
+  .ov-row{margin-top:6px;align-items:center}
+  .ov-tag{flex:0 0 auto;width:54px;font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--ink4)}
+  .ov-row input{padding:6px 8px;font-size:.78rem}
+  .ov-toggle{margin-top:6px;background:none;border:none;color:var(--ink3);font-size:.66rem;font-weight:700;padding:2px 0}
+  .ov-toggle:active{color:var(--lime)}
+  /* dashboard / charts */
+  .dash-item{margin-bottom:14px}
+  .dash-item:last-child{margin-bottom:0}
+  .dash-h{font-size:.68rem;font-weight:700;color:var(--ink3);margin-bottom:4px}
+  .dash-item svg.chart{height:140px}
+  /* body comp form */
+  .bc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .bc-grid input{margin-top:2px}
 </style>
 </head>
 <body>
@@ -218,6 +232,7 @@ function setDaily(d){LS.set("daily:"+todayStr(),d);}
 function weights(){return LS.get("weights",[]);}
 function workouts(){return LS.get("workouts",[]);}
 function photos(){return LS.get("photos",[]);}
+function bodyComps(){return LS.get("body_comp_scans",[]);}
 
 /* ---------- week helpers ---------- */
 function weekBounds(){
@@ -253,10 +268,18 @@ function latestWeight(){const w=weights();return w.length?w[w.length-1].kg:null;
 function migrateWorkouts(){
   const all=workouts();let changed=false;
   const migrated=all.map(w=>({...w,entries:w.entries.map(e=>{
-    if(e.sets||!e.reps)return e;
-    const m=e.reps.match(/(\d+)\s*[x×]\s*(\d+)/i);if(!m)return e;
-    changed=true;const r=parseInt(m[2]);
-    return{ex:e.ex,weight:parseFloat(e.weight)||null,sets:[{reps:r},{reps:r},{reps:r}]};
+    // old "3x12" string format -> sets[]
+    if(!e.sets&&e.reps){
+      const m=e.reps.match(/(\d+)\s*[x×]\s*(\d+)/i);
+      if(m){changed=true;const r=parseInt(m[2]);const wt=parseFloat(e.weight)||null;
+        return{ex:e.ex,weight:wt,sets:[{weight:wt,reps:r},{weight:wt,reps:r},{weight:wt,reps:r}]};}
+    }
+    // backfill per-set weight from entry weight (idempotent)
+    if(e.sets&&e.sets.some(s=>s&&s.weight===undefined)){
+      changed=true;
+      return{...e,sets:e.sets.map(s=>s?{...s,weight:s.weight===undefined?(e.weight??null):s.weight}:s)};
+    }
+    return e;
   })}));
   if(changed)LS.set("workouts",migrated);
 }
@@ -428,7 +451,7 @@ function renderToday(){
         ${svg(I.pencil,'ic')}<span class="label">Session notes</span>
       </div>
       <textarea class="notes-area" placeholder="e.g. felt strong, low energy, shoulder pump…"
-        onchange="setNotes(this)">${d.notes||''}</textarea>
+        oninput="setNotes(this)">${d.notes||''}</textarea>
     </div>
 
   </div>`;
@@ -448,36 +471,51 @@ function renderLift(){
     <div class="stack">
       ${banner}
       <div class="seg">${Object.keys(SESSIONS).map(s=>`<button class="${sess===s?'on':''}" onclick="pickSess('${s}')">${s}</button>`).join("")}</div>
-      <div class="stack" style="--s:8px">${SESSIONS[sess].map(([ex,cue])=>`
+      <div class="stack" style="--s:8px">${SESSIONS[sess].map(([ex,cue])=>{
+        const l=log[ex]||{};const ov=!!l._ov;
+        return `
         <div class="card-sm">
           <div class="ex-name">${ex}</div>
           <div class="ex-cue">${cue}</div>
           <div class="inputs">
-            <input inputmode="decimal" placeholder="kg" value="${log[ex]?.weight||''}" oninput="setLog('${ex}','weight',this.value)">
-            <input inputmode="numeric" placeholder="S1" style="text-align:center" value="${log[ex]?.s0||''}" oninput="setLog('${ex}','s0',this.value)">
-            <input inputmode="numeric" placeholder="S2" style="text-align:center" value="${log[ex]?.s1||''}" oninput="setLog('${ex}','s1',this.value)">
-            <input inputmode="numeric" placeholder="S3" style="text-align:center" value="${log[ex]?.s2||''}" oninput="setLog('${ex}','s2',this.value)">
+            <input inputmode="decimal" placeholder="kg" value="${l.weight||''}" oninput="setLog('${ex}','weight',this.value)">
+            <input inputmode="numeric" placeholder="S1" style="text-align:center" value="${l.s0||''}" oninput="setLog('${ex}','s0',this.value)">
+            <input inputmode="numeric" placeholder="S2" style="text-align:center" value="${l.s1||''}" oninput="setLog('${ex}','s1',this.value)">
+            <input inputmode="numeric" placeholder="S3" style="text-align:center" value="${l.s2||''}" oninput="setLog('${ex}','s2',this.value)">
           </div>
-        </div>`).join("")}</div>
+          ${ov?`<div class="inputs ov-row">
+            <span class="ov-tag">kg/set</span>
+            <input inputmode="decimal" placeholder="${l.weight||'kg'}" style="text-align:center" value="${l.w0||''}" oninput="setLog('${ex}','w0',this.value)">
+            <input inputmode="decimal" placeholder="${l.weight||'kg'}" style="text-align:center" value="${l.w1||''}" oninput="setLog('${ex}','w1',this.value)">
+            <input inputmode="decimal" placeholder="${l.weight||'kg'}" style="text-align:center" value="${l.w2||''}" oninput="setLog('${ex}','w2',this.value)">
+          </div>`:''}
+          <button class="ov-toggle" onclick="toggleOverride('${ex}')">${ov?'– hide per-set kg':'± per-set kg'}</button>
+        </div>`;}).join("")}</div>
       <button class="save" onclick="saveWorkout()">${svg(I.save,'ic')} SAVE ${sess.toUpperCase()}</button>
       <div id="prog-card"></div>
     </div>`;
   view().querySelectorAll(".card-sm").forEach((el,i)=>{if(i>0)el.style.marginTop="8px";});
 }
-window.pickSess=s=>{sess=s;renderLift();};
-window.setLog=(ex,k,v)=>{log[ex]={...(log[ex]||{}),[k]:v};};
+function saveDraft(){LS.set("lift_draft",{sess,log});}
+window.pickSess=s=>{sess=s;saveDraft();renderLift();};
+window.setLog=(ex,k,v)=>{log[ex]={...(log[ex]||{}),[k]:v};saveDraft();};
+window.toggleOverride=ex=>{log[ex]={...(log[ex]||{}),_ov:!(log[ex]&&log[ex]._ov)};saveDraft();renderLift();};
 window.saveWorkout=()=>{
   const entries=SESSIONS[sess].map(([ex])=>{
     const l=log[ex]||{};
     const w=l.weight?parseFloat(l.weight):null;
-    const sets=['s0','s1','s2'].map(k=>({reps:l[k]?parseInt(l[k]):null}));
+    const sets=['s0','s1','s2'].map((k,i)=>{
+      const reps=l[k]?parseInt(l[k]):null;
+      const ov=l['w'+i]?parseFloat(l['w'+i]):null;
+      return{weight:reps===null?null:(ov!==null?ov:w),reps};
+    });
     if(!w&&sets.every(s=>s.reps===null))return null;
     return{ex,weight:w,sets};
   }).filter(Boolean);
   if(!entries.length){toast("Nothing logged");return;}
   const next=[{date:todayStr(),session:sess,entries},...workouts()].slice(0,120);
   LS.set("workouts",next);
-  const saved=entries;log={};renderLift();toast("Saved "+sess);
+  const saved=entries;LS.del("lift_draft");log={};renderLift();toast("Saved "+sess);
   const targets=computeNextTargets(saved,sess);
   if(targets.length)renderProgression(targets,sess);
 };
@@ -555,8 +593,44 @@ function renderWeight(){
         <button class="logbtn" onclick="addWeight()">Log</button>
       </div>
       <p class="note">Weigh weekly, mornings. Watch the trend, not daily noise.</p>
+      ${bodyCompBlock()}
     </div>`;
 }
+function bodyCompBlock(){
+  const scans=bodyComps().slice().sort((a,b)=>a.date.localeCompare(b.date));
+  const latest=scans[scans.length-1];
+  const charts=[
+    ['Body fat %','body_fat_pct','#fb923c'],
+    ['Visceral fat','visceral_fat_level','#f87171'],
+    ['Muscle (kg)','muscle_kg','#34d399']
+  ].map(([h,k,c])=>{
+    const s=scans.map(x=>({label:x.date,val:x[k]!=null?+x[k]:null}));
+    return s.filter(p=>p.val!=null).length>1?`<div class="dash-item"><div class="dash-h">${h}</div>${lineChart(s,{color:c})}</div>`:'';
+  }).join('');
+  return `<div class="card" style="padding:16px 20px">
+    <div class="flex" style="color:var(--emerald);margin-bottom:12px">${svg(I.trend,'ic')}<span class="label">Body composition</span></div>
+    ${latest?`<div class="hist-line" style="padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--ink3)">Latest (${latest.date})</span><span class="mono">${latest.body_fat_pct!=null?latest.body_fat_pct+'% fat':'—'}</span></div>`:''}
+    <div class="bc-form" style="margin-top:12px">
+      <div class="bc-grid">
+        <label class="field-label">Date<input type="date" id="bcDate" value="${todayStr()}"></label>
+        <label class="field-label">Body fat %<input id="bcBf" inputmode="decimal" placeholder="e.g. 24.5"></label>
+        <label class="field-label">Visceral level<input id="bcVf" inputmode="decimal" placeholder="e.g. 8"></label>
+        <label class="field-label">Muscle kg<input id="bcMu" inputmode="decimal" placeholder="e.g. 32.1"></label>
+      </div>
+      <textarea class="notes-area" id="bcNotes" placeholder="notes (optional)" style="height:56px;margin-top:8px"></textarea>
+      <button class="logbtn" style="width:100%;margin-top:8px" onclick="saveBodyComp()">Log scan</button>
+    </div>
+    ${charts?`<div style="margin-top:12px">${charts}</div>`:'<p class="note">Log monthly DEXA / scale scans to see body-fat, visceral & muscle trends.</p>'}
+  </div>`;
+}
+window.saveBodyComp=()=>{
+  const date=($("#bcDate")||{}).value||todayStr();
+  const num=el=>{const v=($(el)||{}).value;return v!==''&&v!=null?parseFloat(v):null;};
+  const entry={date,body_fat_pct:num("#bcBf"),visceral_fat_level:num("#bcVf"),muscle_kg:num("#bcMu"),notes:($("#bcNotes")||{}).value||''};
+  if(entry.body_fat_pct==null&&entry.visceral_fat_level==null&&entry.muscle_kg==null){toast("Nothing to log");return;}
+  const next=[...bodyComps().filter(x=>x.date!==date),entry].sort((a,b)=>a.date.localeCompare(b.date));
+  LS.set("body_comp_scans",next);renderWeight();toast("Scan logged");
+};
 function chartSVG(w){
   const W=360,H=160,pl=34,pr=10,pt=12,pb=22;
   const ys=w.map(d=>d.kg);
@@ -574,6 +648,56 @@ function chartSVG(w){
     ${dots}${ticks}${xl}
   </svg>`;
 }
+/* generic line chart: series=[{label,val}], opts={color} */
+function lineChart(series,opts={}){
+  const pts=series.filter(s=>s.val!=null&&!isNaN(s.val));
+  if(pts.length<2)return `<div class="note" style="padding:8px 0">Need 2+ entries to chart.</div>`;
+  const col=opts.color||"#38bdf8";
+  const W=360,H=140,pl=34,pr=10,pt=12,pb=22;
+  const ys=pts.map(d=>d.val);
+  let ymin=Math.min(...ys),ymax=Math.max(...ys);
+  if(ymin===ymax){ymin-=1;ymax+=1;}else{const pad=(ymax-ymin)*0.12;ymin-=pad;ymax+=pad;}
+  const X=i=>pl+(i/(pts.length-1))*(W-pl-pr);
+  const Y=v=>pt+(1-(v-ymin)/(ymax-ymin))*(H-pt-pb);
+  const line=pts.map((d,i)=>`${X(i)},${Y(d.val)}`).join(" ");
+  const ticks=[ymax,(ymax+ymin)/2,ymin].map(v=>`<text x="2" y="${Y(v)+3}" fill="#666" font-size="9" class="mono">${v.toFixed(1)}</text>`).join("");
+  const dots=pts.map((d,i)=>`<circle cx="${X(i)}" cy="${Y(d.val)}" r="3" fill="${col}"/>`).join("");
+  const xl=pts.map((d,i)=>(i===0||i===pts.length-1)?`<text x="${X(i)}" y="${H-6}" fill="#666" font-size="9" text-anchor="${i===0?'start':'end'}" class="mono">${(d.label||'').slice(5)}</text>`:"").join("");
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <polyline points="${line}" fill="none" stroke="${col}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    ${dots}${ticks}${xl}
+  </svg>`;
+}
+/* generic bar chart: items=[{label,val}], opts={color} */
+function barChart(items,opts={}){
+  if(!items.length)return `<div class="note" style="padding:8px 0">No data yet.</div>`;
+  const col=opts.color||"#a3e635";
+  const W=360,H=130,pl=10,pr=10,pt=10,pb=22;
+  const max=Math.max(1,...items.map(d=>d.val));
+  const bw=(W-pl-pr)/items.length;
+  const bars=items.map((d,i)=>{
+    const h=(d.val/max)*(H-pt-pb);
+    const x=pl+i*bw+bw*0.18,y=H-pb-h,w=bw*0.64;
+    return `<rect x="${x}" y="${y}" width="${w}" height="${Math.max(0,h)}" rx="2" fill="${col}"/>`+
+      `<text x="${x+w/2}" y="${H-pb-h-3}" fill="#a3a3a3" font-size="9" text-anchor="middle" class="mono">${d.val||''}</text>`+
+      `<text x="${x+w/2}" y="${H-6}" fill="#666" font-size="8" text-anchor="middle" class="mono">${d.label}</text>`;
+  }).join("");
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${bars}</svg>`;
+}
+/* sessions-per-week buckets (last n ISO weeks, Mon-Sun) */
+function sessionsByWeek(n=8){
+  const{weekStart}=weekBounds();
+  const out=[];
+  const mon=new Date(weekStart);
+  const wk=workouts();
+  for(let k=n-1;k>=0;k--){
+    const s=new Date(mon);s.setDate(mon.getDate()-k*7);
+    const e=new Date(s);e.setDate(s.getDate()+6);
+    const ss=s.toLocaleDateString("en-CA"),ee=e.toLocaleDateString("en-CA");
+    out.push({label:ss.slice(5),val:wk.filter(w=>w.date>=ss&&w.date<=ee).length});
+  }
+  return out;
+}
 window.addWeight=()=>{
   const v=parseFloat($("#newW").value);if(!v)return;
   const next=[...weights().filter(x=>x.date!==todayStr()),{date:todayStr(),kg:v}].sort((a,b)=>a.date.localeCompare(b.date));
@@ -590,7 +714,13 @@ function renderHistory(){
         <span class="hist-sess">${x.session}</span>
         <span class="mono" style="font-size:.72rem;color:var(--ink3)">${x.date}</span>
       </div>
-      ${x.entries.map(e=>{const rs=e.sets?e.sets.filter(s=>s&&s.reps).map(s=>s.reps).join(','):(e.reps||'–');return`<div class="hist-line"><span>${e.ex}</span><span class="mono">${e.weight||'–'}kg · ${rs}</span></div>`;}).join("")}
+      ${x.entries.map(e=>{
+        const done=e.sets?e.sets.filter(s=>s&&s.reps):[];
+        const varied=done.length&&done.some(s=>s.weight!=null&&s.weight!==e.weight);
+        const detail=varied
+          ?done.map(s=>`${s.reps}@${s.weight!=null?s.weight:(e.weight||'–')}`).join(', ')
+          :`${e.weight||'–'}kg · ${done.length?done.map(s=>s.reps).join(','):(e.reps||'–')}`;
+        return`<div class="hist-line"><span>${e.ex}</span><span class="mono">${detail}</span></div>`;}).join("")}
     </div>`).join("")
   }</div>`;
   view().querySelectorAll("#histStack > *").forEach((el,i)=>{if(i>0)el.style.marginTop="8px";});
@@ -719,9 +849,23 @@ function renderCheckin(){
     <button class="save" onclick="saveCheckin()">${svg(I.save,'ic')} SAVE CHECK-IN</button>
     <button class="save" style="background:var(--card);border:1px solid var(--border);color:var(--ink)"
       onclick="copyCheckin()">${svg(I.download,'ic')} COPY FOR SATURDAY</button>
+    ${dashboardBlock()}
     <div id="checkinHistory"></div>
   </div>`;
   renderCheckinHistory();
+}
+
+function dashboardBlock(){
+  const w=weights();
+  const wkChart=w.length>1?`<div class="dash-item"><div class="dash-h">Weight (kg)</div>${chartSVG(w)}</div>`:'';
+  const sess=sessionsByWeek(8);
+  const sessChart=sess.some(s=>s.val>0)?`<div class="dash-item"><div class="dash-h">Sessions / week</div>${barChart(sess,{color:'#a3e635'})}</div>`:'';
+  const ci=LS.get("weekly_checkins",[]).slice().reverse()
+    .map(c=>({label:c.week_ending,val:c.energy_avg!=null?parseFloat(c.energy_avg):null}));
+  const enChart=ci.filter(c=>c.val!=null).length>1?`<div class="dash-item"><div class="dash-h">Avg energy / 5</div>${lineChart(ci,{color:'#a78bfa'})}</div>`:'';
+  const body=wkChart+sessChart+enChart;
+  if(!body)return '';
+  return `<div class="card"><div class="label" style="color:var(--ink3);margin-bottom:10px;font-size:.72rem">Progress dashboard</div>${body}</div>`;
 }
 
 window.saveCheckin=()=>{
@@ -797,12 +941,13 @@ function renderTabbar(){
   $("#tabbar").innerHTML=TABS.map(([id,label,icon])=>`
     <button class="tab ${tab===id?'on':''}" onclick="go('${id}')">${svg(icon)}<span>${label}</span></button>`).join("");
 }
-window.go=id=>{tab=id;if(id==="lift")log={};render();};
+window.go=id=>{tab=id;render();};
 function render(){renderTabbar();const t=TABS.find(t=>t[0]===tab);(t&&t[3]||renderToday)();}
 
 /* ---------- init ---------- */
 $("#todayLabel").textContent=todayStr();
 migrateWorkouts();
+(()=>{const d=LS.get("lift_draft");if(d){if(d.sess&&SESSIONS[d.sess])sess=d.sess;if(d.log)log=d.log;}})();
 render();
 
 if("serviceWorker" in navigator){
