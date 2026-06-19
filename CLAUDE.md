@@ -24,7 +24,7 @@ localStorage only via `LS` helper object:
 | `workouts` | Array | `{date, session, entries[]}[]` |
 | `photos` | Array | `{date, dataURL}[]` |
 | `weekly_checkins` | Array | `{week_ending, weight_kg, sessions_completed, energy_avg, notes}[]` max 52 |
-| `body_comp_scans` | Array | `{date, body_fat_pct, visceral_fat_level, muscle_kg, notes}[]` ← TO ADD |
+| `body_comp_scans` | Array | `{date, body_fat_pct, visceral_fat_level, muscle_kg, notes}[]` ← **planned, not yet implemented** |
 
 ### Daily object schema
 ```js
@@ -35,10 +35,10 @@ localStorage only via `LS` helper object:
   notes: "",          // string
   cardio: {
     done: false,
-    type: null,       // "run/walk" or null
+    type: null,       // "run/walk" | "other" | null
     duration_min: null,
     intensity: "easy",// "easy"|"moderate"|"hard"
-    run_ratio: null   // string e.g. "1:2"
+    run_ratio: null   // string e.g. "1:2" (only shown when type="run/walk")
   }
 }
 ```
@@ -48,6 +48,10 @@ localStorage only via `LS` helper object:
 { ex: "Chest press", weight: 50, sets: [{reps:12},{reps:12},{reps:12}] }
 ```
 Old entries `{ ex, weight: "50", reps: "3x12" }` are auto-migrated at boot via `migrateWorkouts()`.
+
+### Back-compat notes
+- Old cardio was stored as a boolean (`cardio: true/false`). On load, converted to full object with `done` field.
+- Old workout `reps` string format migrated to `sets[]` array by `migrateWorkouts()`. Idempotent.
 
 ### Weekly check-in schema
 ```js
@@ -122,8 +126,8 @@ Lower B: Goblet/Hack squat, Hip thrust, Walking lunge, Leg curl, Seated calf rai
 ## Tier 2 features (status)
 1. ✅ **Progression targets** — after saving a lift session, shows next-session targets per exercise. Logic: all 3 sets ≥ 12 reps → +2.5 kg (upper) / +5 kg (lower), reset aim to 10,10,10. Implemented in `computeNextTargets()` + `renderProgression()`.
 2. ✅ **Weekly check-in tab** — `renderCheckin()`. Auto-fills latest weight, sessions this week, avg energy. Manual progression notes. "Copy for Saturday" copies formatted summary to clipboard. Saves to `weekly_checkins` (upsert by `week_ending`, max 52).
-3. **Cardio history** — in History tab, below lift history. Show date, type, duration, intensity, run_ratio from daily logs. `cardio.type` field now set via UI (Run/Walk | Other).
-4. **Body comp monthly log** — in Weight tab. Input form: date, body_fat_%, visceral_fat_level, muscle_kg, notes. Charts: body fat % trend + visceral fat trend + muscle mass trend alongside weight chart.
+3. ⬜ **Cardio history** — in History tab, below lift history. Show date, type, duration, intensity, run_ratio from daily logs. `cardio.type` is `"run/walk"` or `"other"` (set via UI).
+4. ⬜ **Body comp monthly log** — in Weight tab. Input form: date, body_fat_%, visceral_fat_level, muscle_kg, notes. Charts: body fat % trend + visceral fat trend + muscle mass trend. Stored in `body_comp_scans` key.
 
 ## Rep range reference (for progression logic)
 All exercises: 3 sets × 10-12 reps. When all 3 sets hit 12 reps → add weight.
