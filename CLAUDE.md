@@ -21,11 +21,12 @@ localStorage only via `LS` helper object:
 |-----|------|---------|
 | `daily:YYYY-MM-DD` | Object | water, steps, energy, notes, cardio |
 | `weights` | Array | `{date, kg}[]` |
-| `workouts` | Array | `{date, session, entries[]}[]` |
+| `workouts` | Array | `{date, session, entries[], durationMin?}[]` |
 | `photos` | Array | `{date, dataURL}[]` |
 | `weekly_checkins` | Array | `{week_ending, weight_kg, sessions_completed, energy_avg, notes}[]` max 52 |
 | `body_comp_scans` | Array | `{date, body_fat_pct, visceral_fat_level, muscle_kg, notes}[]` (upsert by date) |
-| `lift_draft` | Object | `{sess, log}` — in-progress lift inputs, auto-saved per keystroke, cleared on SAVE |
+| `lift_draft` | Object | `{sess, log, startedAt?}` — in-progress lift inputs + workout-start epoch ms, auto-saved per keystroke, cleared on SAVE |
+| `routines` | Object | `{name: {type:"upper"\|"lower", exercises:[[name,cue],...]}}` — user-editable workout templates. Seeded from `SESSIONS` defaults on first boot (`seedRoutines()`). `type` drives the progression increment. |
 
 ### Daily object schema
 ```js
@@ -46,14 +47,19 @@ localStorage only via `LS` helper object:
 
 ### Workout entry schema (CURRENT)
 ```js
-{ ex: "Chest press", weight: 50, sets: [{weight:50,reps:12},{weight:50,reps:12},{weight:52.5,reps:10}] }
+{ ex: "Chest press", weight: 50, sets: [{weight:50,reps:12,rir:2},{weight:50,reps:12,rir:2},{weight:52.5,reps:10,rir:2}] }
 ```
 - Top-level `weight` = the main/shared weight (used by `computeNextTargets` + compact history).
 - Each set carries its own `weight`. The Lift UI has one shared `kg` box; tapping `± per-set kg`
   reveals optional per-set weight overrides. A set's weight = its override, else the shared weight.
-- History shows compact `50kg · 12,12,10` when all set weights match, else per-set `12@50, 10@52.5`.
+- `rir` (reps in reserve, 0–4) is one shared value per exercise, applied to every logged set on save
+  (`null` if not entered). RIR 0 on save shows an anemia "leave 1-2 in reserve" guard in the progression card.
+- History shows compact `50kg · 12,12,10` when all set weights match, else per-set `12@50, 10@52.5`,
+  then `· RIR n` when present.
+- Workout record carries optional `durationMin` (from `lift_draft.startedAt`, stamped on first set entry).
 - Old entries `{ ex, weight: "50", reps: "3x12" }` and pre-per-set `sets:[{reps}]` are auto-migrated
-  at boot via `migrateWorkouts()` (backfills `weight` onto each set). Idempotent.
+  at boot via `migrateWorkouts()` (backfills `weight` onto each set). Idempotent. Old sets without `rir`
+  and old workouts without `durationMin` are valid (fields optional).
 
 ### Back-compat notes
 - Old cardio was stored as a boolean (`cardio: true/false`). On load, converted to full object with `done` field.
@@ -86,6 +92,10 @@ const saveDaily = (updates) => {
 ```
 
 ## Sessions / exercises
+The `SESSIONS` const is now only the **seed source** for `routines` (see Keys). At runtime, the Lift tab,
+`saveWorkout`, and `computeNextTargets` read the editable `routines` LS key via `routines()` /
+`routineNames()` / `routineExercises()` / `routineType()` — NOT `SESSIONS` directly. Users add/rename/
+delete/reorder routines and exercises in the Backup tab (`routinesEditor()` + `rt*` handlers). Default seed:
 ```
 Upper A: Chest press, Lat pulldown, Seated row, Shoulder press, Bicep curl, Triceps pushdown
 Lower A: Leg press, Romanian deadlift, Leg curl, Leg extension, Calf raise, Plank
@@ -94,7 +104,11 @@ Lower B: Goblet/Hack squat, Hip thrust, Walking lunge, Leg curl, Seated calf rai
 ```
 
 ## Tabs (current)
-`today | lift | weight | history | checkin | photos | settings(Backup)`
+4 bottom tabs (Hevy-style): **Home** (`today`) · **Workout** (`lift`) · **History** (`history`) · **Profile** (`profile`).
+Sub-screens (no bottom button, reached from Profile): `weight`, `checkin`, `photos`, `settings`(Backup, via Profile gear).
+- Nav registry: `RENDERERS` (id→render fn), `TABBAR` (4 bottom entries), `PROFILE_SUB` (ids that keep Profile highlighted), `TITLES` (header titles).
+- **History nav**: `navStack`/`navIndex` + `go(id)` (push), `goBack()`/`goForward()`. Header (`#appHead`, via `renderHeader()`) shows ← / → on every screen (dimmed at ends), a title, and a right action (date on Home, settings gear on Profile).
+- `renderProfile()` = hub: weight/workout stats, `dashboardBlock()` trends, Weight/Check-in/Photos cards, recent-workouts list. `dashboardBlock()` moved here (removed from `renderCheckin`).
 
 ## User / fitness context
 - Goal: 89 → 68-70 kg fat loss + muscle building
@@ -118,10 +132,16 @@ Lower B: Goblet/Hack squat, Hip thrust, Walking lunge, Leg curl, Seated calf rai
 | `weeklyEnergyAvg()` | Average energy > 0 from daily logs this week, returns string or null |
 | `latestWeight()` | Latest kg from weights array, or null |
 | `migrateWorkouts()` | One-shot boot migration: old `{reps:"3x12"}` → `{sets:[…]}` + per-set `weight` backfill. Idempotent. |
-| `computeNextTargets(entries, sessionType)` | Progression logic per exercise (uses top-level `weight`) |
-| `renderProgression(targets, sessionType)` | Populates `#prog-card` after save |
+| `computeNextTargets(entries, sessionType)` | Progression logic per exercise (uses top-level `weight`; increment from `routineType()`) |
+| `renderProgression(targets, sessionType, toFailure, prs)` | Populates `#prog-card` after save: PR badges, anemia RIR-0 guard, next targets |
 | `renderCheckinHistory()` | Partial re-render of `#checkinHistory` in Check-in tab |
-| `saveDraft()` | Persists `{sess, log}` to `lift_draft` (called on every lift keystroke / session switch) |
+| `saveDraft()` | Persists `{sess, log, startedAt}` to `lift_draft` (called on every lift keystroke / session switch) |
+| `seedRoutines()` / `routines()` / `routineNames()` / `routineExercises(n)` / `routineType(n)` | Routines layer: one-shot seed from `SESSIONS`, then readers for the editable `routines` LS key |
+| `routinesEditor()` + `rtAdd/rtDel/rtType/rtRename/rtExAdd/rtExDel/rtExMove` | Routines editor (Backup tab); names run through `sanitizeName()` before storage |
+| `est1RM(w, r)` | Epley estimated 1RM `w*(1+r/30)` |
+| `exercisePRs()` / `exerciseNames()` / `exerciseSeries(ex)` | PR map (best weight + best e1RM per exercise), exercise list, est-1RM time series |
+| `sessionVolume(entries)` / `volumeByWeek(n)` | Tonnage Σ weight×reps per session; last `n` Mon–Sun weekly volume (tonnes) for the dashboard |
+| Rest/duration timers | `restStart/restToggle/restReset` + `updateRestBar()`; `updateDurLabel()`/`ensureDurTimer()` for live workout duration |
 | `lineChart(series, {color})` | Generic SVG line chart from `[{label,val}]` (reused by dashboard + body comp) |
 | `barChart(items, {color})` | Generic SVG bar chart from `[{label,val}]` |
 | `sessionsByWeek(n)` | Last `n` Mon–Sun session counts as `[{label,val}]` for the dashboard |
@@ -148,6 +168,21 @@ Lower B: Goblet/Hack squat, Hip thrust, Walking lunge, Leg curl, Seated calf rai
 - **Per-set weight** — see Workout entry schema above (`± per-set kg` override).
 - **Progress dashboard** — `dashboardBlock()` in Check-in tab: weight / sessions-per-week / avg-energy trends.
 - **Today notes** save on `oninput` (as-you-type), not `onchange`.
+
+## Hevy-style features (post-dashboard)
+Four feature clusters ported from the Hevy app, all client-side (no backend), single file:
+1. **Rest + workout timers** — Lift tab: sticky rest timer (60/90/120s presets, pause/reset, vibrate +
+   WebAudio beep at zero) and a live workout-duration clock. `startedAt` stamped on first set entry into
+   `lift_draft`; `durationMin` written onto the saved workout and shown in History. Timers are JS-only
+   (intervals no-op when their DOM els are absent, so they survive tab switches).
+2. **RIR per set** — one RIR selector per exercise; stored on each logged set. Anemia guard: RIR 0 → note
+   in the progression card. Shown in History as `· RIR n`.
+3. **PR / 1RM / volume analytics** — `est1RM` (Epley), PR detection on save (badge + toast), per-exercise
+   est-1RM chart in History (`#exChart` + `showExChart`), per-session tonnage in History, weekly volume
+   bar chart in the dashboard. Reuses `lineChart`/`barChart`. No schema change (derived from `workouts`).
+4. **Custom exercises + routines** — `SESSIONS` moved to the editable `routines` LS key (seeded once).
+   Editor in the Backup tab. Routine `type` (upper/lower) drives the progression increment. `sess` falls
+   back to the first routine if its routine was deleted.
 
 ## Rep range reference (for progression logic)
 All exercises: 3 sets × 10-12 reps. When all 3 sets hit 12 reps → add weight.
