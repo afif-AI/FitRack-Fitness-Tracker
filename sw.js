@@ -1,4 +1,4 @@
-const CACHE = "afiflog-v1";
+const CACHE = "fitrack-v1";
 const ASSETS = ["./", "./index.html", "./manifest.json"];
 
 self.addEventListener("install", (e) => {

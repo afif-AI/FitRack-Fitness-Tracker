@@ -1,6 +1,6 @@
 {
-  "name": "AFIF/LOG",
-  "short_name": "AFIF/LOG",
+  "name": "FitRack",
+  "short_name": "FitRack",
   "description": "Fat loss + muscle tracker",
   "start_url": "./index.html",
   "scope": "./",

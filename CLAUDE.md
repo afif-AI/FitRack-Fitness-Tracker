@@ -1,8 +1,9 @@
-# AFIF/LOG PWA
+# FitRack PWA
 
 ## Project
-Single-file PWA fitness tracker. One file: `index.html`. Vanilla JS, no build step, no npm, no framework.
+Single-file PWA fitness tracker (app name: **FitRack**, formerly AFIF/LOG — repo/URL still `afif-log`). One file: `index.html`. Vanilla JS, no build step, no npm, no framework.
 Deployed via GitHub Pages: https://afif-ai.github.io/afif-log/
+Rebrand note: manifest name/short_name, page title, header logo, backup filename, and sw cache (`fitrack-v1`) all say FitRack. Icons are still the old AFIF/LOG PNGs (data URIs in manifest.json) — pending a new FitRack icon. Known bug: `<link rel="apple-touch-icon">` in index.html points at `manifest.json` instead of a PNG; iOS ignores manifest data-URI icons, so ship the new icon as real PNG files (180 touch + 192/512 maskable). Exported backups keep `_app:"afiflog"` for import back-compat.
 
 ## Deploy
 ```bash

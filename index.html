@@ -6,10 +6,10 @@
 <meta name="theme-color" content="#0a0a0a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="AFIF/LOG">
+<meta name="apple-mobile-web-app-title" content="FitRack">
 <link rel="manifest" href="./manifest.json">
 <link rel="apple-touch-icon" href="./manifest.json">
-<title>AFIF/LOG</title>
+<title>FitRack</title>
 <style>
   :root{
     --bg:#0a0a0a; --card:#171717; --border:#262626; --border2:#333;
@@ -982,7 +982,7 @@ window.exportData=()=>{
   for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);dump[k]=localStorage.getItem(k);}
   const blob=new Blob([JSON.stringify({_app:"afiflog",_v:1,data:dump},null,0)],{type:"application/json"});
   const a=document.createElement("a");a.href=URL.createObjectURL(blob);
-  a.download="afiflog-backup-"+todayStr()+".json";a.click();
+  a.download="fitrack-backup-"+todayStr()+".json";a.click();
   URL.revokeObjectURL(a.href);toast("Exported");
 };
 window.importData=inp=>{
@@ -1208,7 +1208,7 @@ function renderHeader(){
     <button class="nav-btn ${fwd?'':'disabled'}" ${fwd?'onclick="goForward()"':''}>${svg(I.fwd,'ic')}</button>
   </div>`;
   const title=tab==="today"
-    ?`<h1 class="head-title">AFIF<span>/</span>LOG</h1>`
+    ?`<h1 class="head-title">FitRack</h1>`
     :`<span class="head-title sub">${TITLES[tab]||""}</span>`;
   const right=tab==="today"?`<span class="date mono">${todayStr()}</span>`
     :tab==="profile"?`<button class="gear-btn" onclick="go('settings')">${svg(I.gear,'ic')}</button>`
