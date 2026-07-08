@@ -3,121 +3,82 @@
 ## Project
 Single-file PWA fitness tracker (app name: **FitRack**, formerly AFIF/LOG — repo/URL still `afif-log`). One file: `index.html`. Vanilla JS, no build step, no npm, no framework.
 Deployed via GitHub Pages: https://afif-ai.github.io/afif-log/
-Rebrand note: manifest name/short_name, page title, header logo, backup filename, and sw cache (`fitrack-v1`) all say FitRack. Icons are still the old AFIF/LOG PNGs (data URIs in manifest.json) — pending a new FitRack icon. Known bug: `<link rel="apple-touch-icon">` in index.html points at `manifest.json` instead of a PNG; iOS ignores manifest data-URI icons, so ship the new icon as real PNG files (180 touch + 192/512 maskable). Exported backups keep `_app:"afiflog"` for import back-compat.
+Support files: `manifest.json`, `sw.js`, `icons/` (real PNGs: 192, 512, 512-maskable), `fonts/archivo.woff2` (self-hosted variable font, weights 100–900 — no Google Fonts request).
 
 ## Deploy
 ```bash
-git add index.html && git commit -m "msg" && git push origin main
+# IMPORTANT: bump CACHE_NAME in sw.js (fitrack-shell-vN → vN+1) on EVERY deploy,
+# otherwise installed users keep the old cached shell assets.
+git add -A && git commit -m "msg" && git push origin main
 ```
-GitHub Pages auto-deploys in ~1 min.
+GitHub Pages auto-deploys in ~1 min. The SW is network-first for HTML (so index.html updates arrive without a bump), but static assets (icons, font, manifest) are cache-first — the bump is what refreshes those and clears the old cache.
 
 ## Storage layer
-localStorage only via `LS` helper object:
-- `LS.get(key, default)` — reads + JSON.parses
-- `LS.set(key, value)` — JSON.stringifies then writes
-- **NEVER** call `JSON.stringify()` before passing to `LS.set()` — it already stringifies. Double-stringify corrupts data.
+Two stores:
+- **localStorage** via the `LS` helper for all structured data:
+  - `LS.get(key, default)` — reads + JSON.parses
+  - `LS.set(key, value)` — JSON.stringifies then writes; **returns `true`/`false`** — callers that must not lose data (e.g. `commitWorkout`) check the return and keep their draft on failure
+  - **NEVER** call `JSON.stringify()` before passing to `LS.set()` — it already stringifies. Double-stringify corrupts data.
+- **IndexedDB** (db `fitrack`, store `photos`, autoIncrement `id`) via the promise-wrapped `PDB` helper (`all/add/del/clear`) for progress photos only — they're too big for localStorage. `migratePhotosToIDB()` (one-shot, boot) moves any legacy `photos` localStorage key into IDB; `photosReady` is the migration promise every photo reader awaits. `photoCache` (newest-first, by `id` desc) backs the lightbox.
 
-### Keys
+### localStorage keys
 | Key | Type | Content |
 |-----|------|---------|
-| `daily:YYYY-MM-DD` | Object | water, steps, energy, notes, cardio |
-| `weights` | Array | `{date, kg}[]` |
-| `workouts` | Array | `{date, session, entries[], durationMin?}[]` |
-| `photos` | Array | `{date, dataURL}[]` |
-| `weekly_checkins` | Array | `{week_ending, weight_kg, sessions_completed, energy_avg, notes}[]` max 52 |
+| `weights` | Array | `{date, kg}[]` ascending by date |
+| `workouts` | Array | `{date, session, entries[], durationMin?}[]` newest-first, **uncapped** |
+| `cardio_sessions` | Array | `{date, type, duration_min, intensity, run_ratio}[]` newest-first, uncapped |
+| `weekly_checkins` | Array | `{week_ending, weight_kg, sessions_completed, notes}[]` max 52 (old entries may carry `energy_avg`; render it only if present) |
 | `body_comp_scans` | Array | `{date, body_fat_pct, visceral_fat_level, muscle_kg, notes}[]` (upsert by date) |
-| `lift_draft` | Object | `{sess, log, startedAt?}` — in-progress lift inputs + workout-start epoch ms, auto-saved per keystroke, cleared on SAVE |
-| `routines` | Object | `{name: {type:"upper"\|"lower", exercises:[[name,cue],...]}}` — user-editable workout templates. Seeded from `SESSIONS` defaults on first boot (`seedRoutines()`). `type` drives the progression increment. |
+| `lift_draft` | Object | `{sess, log, startedAt?}` — in-progress lift inputs + workout-start epoch ms, saved per keystroke, cleared on successful save. Boot guard: draft older than 12 h prompts resume (clock restarted) or discard. |
+| `routines` | Object | `{name: {type:"upper"\|"lower", exercises:[[name,cue],...]}}` — seeded from `SESSIONS` on first boot (`seedRoutines()`); `type` drives the progression increment |
+| `theme` | String | `"lime"` (default) or `"electric"` — `applyTheme()` also syncs the `theme-color` meta |
+| `last_export` | String | YYYY-MM-DD of last backup; Home shows a nudge banner when missing (≥3 records) or >30 days old |
+| `cardio_migrated` | Bool | one-shot flag for `migrateCardio()` (pre-rebuild `daily:*` cardio → `cardio_sessions`) |
+| `daily:YYYY-MM-DD` | Object | **legacy only** (pre-rebuild water/steps/energy/notes/cardio) — nothing writes these anymore; kept for cardio migration + old backups |
 
-### Daily object schema
+### Workout entry schema
 ```js
-{
-  water: 0,           // int 0-8
-  steps: false,       // bool
-  energy: 0,          // int 0-5
-  notes: "",          // string
-  cardio: {
-    done: false,
-    type: null,       // "run/walk" | "other" | null
-    duration_min: null,
-    intensity: "easy",// "easy"|"moderate"|"hard"
-    run_ratio: null   // string e.g. "1:2" (only shown when type="run/walk")
-  }
-}
+{ ex: "Chest press", weight: 50, sets: [{weight:50,reps:12},{weight:50,reps:12},{weight:52.5,reps:10}] }
 ```
+- Top-level `weight` = first logged set's weight (used by compact history + `prevText`).
+- Each set carries its own `weight` and `reps`. RIR was removed in the rebuild; old sets with `rir` are still valid (field ignored).
+- `durationMin` optional (from `lift_draft.startedAt`).
+- Old formats (`{reps:"3x12"}`, sets without per-set weight) auto-migrated at boot by `migrateWorkouts()`. Idempotent.
 
-### Workout entry schema (CURRENT)
-```js
-{ ex: "Chest press", weight: 50, sets: [{weight:50,reps:12,rir:2},{weight:50,reps:12,rir:2},{weight:52.5,reps:10,rir:2}] }
-```
-- Top-level `weight` = the main/shared weight (used by `computeNextTargets` + compact history).
-- Each set carries its own `weight`. The Lift UI has one shared `kg` box; tapping `± per-set kg`
-  reveals optional per-set weight overrides. A set's weight = its override, else the shared weight.
-- `rir` (reps in reserve, 0–4) is one shared value per exercise, applied to every logged set on save
-  (`null` if not entered). RIR 0 on save shows an anemia "leave 1-2 in reserve" guard in the progression card.
-- History shows compact `50kg · 12,12,10` when all set weights match, else per-set `12@50, 10@52.5`,
-  then `· RIR n` when present.
-- Workout record carries optional `durationMin` (from `lift_draft.startedAt`, stamped on first set entry).
-- Old entries `{ ex, weight: "50", reps: "3x12" }` and pre-per-set `sets:[{reps}]` are auto-migrated
-  at boot via `migrateWorkouts()` (backfills `weight` onto each set). Idempotent. Old sets without `rir`
-  and old workouts without `durationMin` are valid (fields optional).
+### Backup format
+`exportData()` (async) produces `{_app:"fitrack", _v:3, data:{<raw localStorage>}, photos:[{date,dataURL}]}` and stamps `last_export`.
+`importData()` validates (`_app` is `fitrack`/`afiflog` or dump contains known keys), routes photos to IDB (handles v3 top-level array AND v1/v2 `data.photos` JSON string — never writes a `photos` localStorage key), then **`location.reload()`** so in-memory state can't clobber imported data.
 
-### Back-compat notes
-- Old cardio was stored as a boolean (`cardio: true/false`). On load, converted to full object with `done` field.
-- Old workout `reps` string format migrated to `sets[]` array by `migrateWorkouts()`. Idempotent.
-- Pre-per-set workouts (`sets:[{reps}]` with no per-set `weight`) get `weight` backfilled from the entry's top-level `weight` by `migrateWorkouts()`. Idempotent.
-
-### Weekly check-in schema
-```js
-{ week_ending: "YYYY-MM-DD", weight_kg: 85.2, sessions_completed: 3, energy_avg: "3.2", notes: "..." }
-```
-
-### saveDaily pattern (atomic read-merge-write)
-```js
-const saveDaily = (updates) => {
-  const key = `daily:${todayStr()}`;
-  let current = {};
-  try { const e = LS.get(key); if (e) current = e; } catch {}
-  const merged = { ...current, ...updates };
-  LS.set(key, merged); // LS.set already stringifies — no JSON.stringify here
-  return merged;
-};
-```
-
-## CSS variables (dark theme)
-```css
---bg:#0a0a0a; --card:#171717; --border:#262626; --border2:#333;
---ink:#f5f5f5; --ink2:#a3a3a3; --ink3:#737373; --ink4:#525252;
---lime:#a3e635; --sky:#38bdf8; --orange:#fb923c;
---emerald:#34d399; --red:#f87171; --purple:#a78bfa;
-```
-
-## Sessions / exercises
-The `SESSIONS` const is now only the **seed source** for `routines` (see Keys). At runtime, the Lift tab,
-`saveWorkout`, and `computeNextTargets` read the editable `routines` LS key via `routines()` /
-`routineNames()` / `routineExercises()` / `routineType()` — NOT `SESSIONS` directly. Users add/rename/
-delete/reorder routines and exercises in the Backup tab (`routinesEditor()` + `rt*` handlers). Default seed:
-```
-Upper A: Chest press, Lat pulldown, Seated row, Shoulder press, Bicep curl, Triceps pushdown
-Lower A: Leg press, Romanian deadlift, Leg curl, Leg extension, Calf raise, Plank
-Upper B: Incline press, Assisted pull-up, Cable row, Lateral raise, Face pull, Hammer curl
-Lower B: Goblet/Hack squat, Hip thrust, Walking lunge, Leg curl, Seated calf raise, Hanging knee raise
-```
+## Service worker (sw.js)
+Cache `fitrack-shell-vN`. Navigations/HTML → **network-first**, cached shell as offline fallback. Everything else → cache-first with runtime caching of same-origin responses; offline misses return a 503 `Response`, never `undefined`. Registered with a relative path (GitHub Pages subpath).
 
 ## Tabs (current)
-4 bottom tabs (Hevy-style): **Home** (`today`) · **Workout** (`lift`) · **History** (`history`) · **Profile** (`profile`).
-Sub-screens (no bottom button, reached from Profile): `weight`, `checkin`, `photos`, `settings`(Backup, via Profile gear).
-- Nav registry: `RENDERERS` (id→render fn), `TABBAR` (4 bottom entries), `PROFILE_SUB` (ids that keep Profile highlighted), `TITLES` (header titles).
-- **History nav**: `navStack`/`navIndex` + `go(id)` (push), `goBack()`/`goForward()`. Header (`#appHead`, via `renderHeader()`) shows ← / → on every screen (dimmed at ends), a title, and a right action (date on Home, settings gear on Profile).
-- `renderProfile()` = hub: weight/workout stats, `dashboardBlock()` trends, Weight/Check-in/Photos cards, recent-workouts list. `dashboardBlock()` moved here (removed from `renderCheckin`).
+5 bottom tabs: **Home** (`today`) · **Workout** (`lift`) · **Cardio** (`cardio`) · **History** (`history`) · **Profile** (`profile`).
+Sub-screens: `weight`, `checkin`, `photos`, `settings` (via Profile) · `routines`, `finishgate` (via Workout).
+- Nav registry: `RENDERERS`, `TABBAR`, `PROFILE_SUB`, `WORKOUT_SUB`, `TITLES`; history nav via `navStack`/`go()`/`goBack()`/`goForward()`; header built by `renderHeader()`.
+- **Home**: greeting, backup-nudge banner, stat grid (week/streak/month/total), weight card + sparkline, recent sessions.
+- **Workout**: routine cards (locked while another is in progress), per-set kg/reps rows with done-checks, sticky FINISH bar. First set entry stamps `startedAt` and calls `liftActivate()` — a *surgical* DOM insert of the timer bar. **Never full-re-render the lift view from an `oninput` handler** — it replaces the focused input and closes the mobile keyboard.
+- **Finish gate** (`finishgate`): a progress photo is REQUIRED to save a session (`pendingPhoto` → IDB → `commitWorkout()`). Redirects to `lift` if no workout is active.
+- **Cardio**: log form (type/duration/intensity/ratio; draft survives type switches via `cardioDraft`) + history list.
+- **Profile**: hub → Weight (+ body comp), Check-in, Photos, Settings; `dashboardBlock()` charts (weight, sessions/week, volume/week — energy chart removed).
+
+## Timers
+- Rest timer: **wall-clock deadline** (`restEndsAt` epoch; `restPaused` holds remaining seconds while paused). `restRemaining()` derives display time so background throttling can't drift it. `armAudio()` creates/resumes the shared `AudioContext` inside the `restStart`/`restToggle` gesture (iOS blocks audio otherwise); `restDone()` beeps + vibrates.
+- Duration clock: `workoutStart` epoch, `updateDurLabel()`/`ensureDurTimer()`. A `visibilitychange` listener refreshes both displays on foreground.
+
+## Security / escaping
+- `esc(s)` HTML-escapes every user-originated string at render time (names, notes, cues, values).
+- Inline `onclick`/`oninput` handlers must receive **indices, not user strings** (`setLog(idx,…)`, `pickSess(idx)`, `rt*(ri,…)` resolve names via `exAt()`/`rtNameAt()`); imported data bypasses `sanitizeName`, so nothing user-typed may land inside a JS string literal in HTML.
+
+## Dates
+`todayStr()` = YYYY-MM-DD local. **Always parse date strings with `parseLocal()`**, never `new Date("YYYY-MM-DD")` (parses as UTC; off-by-one west of Greenwich). Weeks are Mon–Sun via `weekBounds()`.
 
 ## User / fitness context
 - Goal: 89 → 68-70 kg fat loss + muscle building
-- Beginner gym-goer, anemia (no training to failure, 1-2 RIR)
+- Beginner gym-goer, anemia (no training to failure, 1-2 reps in reserve)
 - Elevated liver enzymes (never suggest fat burners or strong pre-workouts)
 - High LDL (low saturated fat)
-- Training: double progression method (reps first, then weight)
-- Weekly Saturday check-ins
+- Training: double progression (reps first, then weight); weekly Saturday check-ins
 - Supplements: whey + creatine only
 
 ## Medical flags (always respect)
@@ -128,63 +89,27 @@ Sub-screens (no bottom button, reached from Profile): `weight`, `checkin`, `phot
 ## Key helpers (JS)
 | Function | Purpose |
 |----------|---------|
-| `weekBounds()` | Returns `{weekStart, weekEnd}` (Mon–Sun ISO week) as YYYY-MM-DD strings |
-| `weeklySessionCount()` | Count workouts this week |
-| `weeklyEnergyAvg()` | Average energy > 0 from daily logs this week, returns string or null |
-| `latestWeight()` | Latest kg from weights array, or null |
-| `migrateWorkouts()` | One-shot boot migration: old `{reps:"3x12"}` → `{sets:[…]}` + per-set `weight` backfill. Idempotent. |
-| `computeNextTargets(entries, sessionType)` | Progression logic per exercise (uses top-level `weight`; increment from `routineType()`) |
-| `renderProgression(targets, sessionType, toFailure, prs)` | Populates `#prog-card` after save: PR badges, anemia RIR-0 guard, next targets |
-| `renderCheckinHistory()` | Partial re-render of `#checkinHistory` in Check-in tab |
-| `saveDraft()` | Persists `{sess, log, startedAt}` to `lift_draft` (called on every lift keystroke / session switch) |
-| `seedRoutines()` / `routines()` / `routineNames()` / `routineExercises(n)` / `routineType(n)` | Routines layer: one-shot seed from `SESSIONS`, then readers for the editable `routines` LS key |
-| `routinesEditor()` + `rtAdd/rtDel/rtType/rtRename/rtExAdd/rtExDel/rtExMove` | Routines editor (Backup tab); names run through `sanitizeName()` before storage |
-| `est1RM(w, r)` | Epley estimated 1RM `w*(1+r/30)` |
-| `exercisePRs()` / `exerciseNames()` / `exerciseSeries(ex)` | PR map (best weight + best e1RM per exercise), exercise list, est-1RM time series |
-| `sessionVolume(entries)` / `volumeByWeek(n)` | Tonnage Σ weight×reps per session; last `n` Mon–Sun weekly volume (tonnes) for the dashboard |
-| Rest/duration timers | `restStart/restToggle/restReset` + `updateRestBar()`; `updateDurLabel()`/`ensureDurTimer()` for live workout duration |
-| `lineChart(series, {color})` | Generic SVG line chart from `[{label,val}]` (reused by dashboard + body comp) |
-| `barChart(items, {color})` | Generic SVG bar chart from `[{label,val}]` |
-| `sessionsByWeek(n)` | Last `n` Mon–Sun session counts as `[{label,val}]` for the dashboard |
-| `dashboardBlock()` | Weight / sessions / energy trend charts in the Check-in tab |
-| `bodyCompBlock()` / `saveBodyComp()` | Body-comp form + trend charts in the Weight tab; upsert by date into `body_comp_scans` |
-| `bodyComps()` | Reader for `body_comp_scans` |
+| `parseLocal(s)` | "YYYY-MM-DD" → local-midnight Date (use instead of `new Date(str)`) |
+| `esc(s)` | HTML-escape user strings for innerHTML |
+| `weekBounds()` / `weeklySessionCount()` / `latestWeight()` | Week + summary stats |
+| `computeStreak()` / `monthCount()` / `prSessionDates()` | Home stat grid |
+| `migrateWorkouts()` / `migrateCardio()` / `migratePhotosToIDB()` | One-shot idempotent boot migrations |
+| `est1RM(w,r)` / `exercisePRs()` / `exerciseSeries(ex)` / `sessionVolume()` / `volumeByWeek(n)` / `sessionsByWeek(n)` | Analytics (derived from `workouts`, no schema) |
+| `chartSVG` / `lineChart` / `barChart` / `sparkSVG` | Inline SVG charts |
+| `seedRoutines()` / `routines()` / `routineNames()` / `routineExercises(n)` / `routineType(n)` / `exAt(idx)` | Routines layer |
+| `routinesEditor()` + `rtAdd/rtDel/rtType/rtRename/rtExAdd/rtExDel/rtExMove` (index args) | Routines editor screen |
+| `saveDraft()` / `liftActivate()` / `commitWorkout()` | Lift session lifecycle (commit checks `LS.set` result; draft kept on failure) |
+| `restStart/restToggle/restReset` + `restRemaining()`/`updateRestBar()` | Rest timer |
+| `PDB` / `loadPhotos()` / `photosReady` | IndexedDB photo store |
+| `backupNudge()` | Home export-reminder banner |
+| `bodyCompBlock()` / `saveBodyComp()` / `bodyComps()` | Body-comp log (Weight screen) |
 
 ## Rules
-- Mobile-first, no desktop-only UI
-- No frameworks, no npm packages, no build tools
-- Inline SVG icons via `I` object + `svg()` helper
-- All buttons use `onclick="fn()"` pattern (not addEventListener)
-- `todayStr()` returns YYYY-MM-DD in local timezone
-- `monthOneBanner()` auto-hides after 28 days from first workout
+- Mobile-first, no desktop-only UI; zoom must stay enabled (no `user-scalable=no`)
+- No frameworks, no npm packages, no build tools, no external network requests at runtime (font is self-hosted)
+- Inline SVG icons via `I` object + `svg()` helper; icon-only buttons get `aria-label`
+- All buttons use `onclick="fn()"` pattern with **index arguments** for user-named things
+- `monthOneBanner()` (anemia reminder) auto-hides 28 days after first workout
 
-## Tier 2 features (status)
-1. ✅ **Progression targets** — after saving a lift session, shows next-session targets per exercise. Logic: all 3 sets ≥ 12 reps → +2.5 kg (upper) / +5 kg (lower), reset aim to 10,10,10. Implemented in `computeNextTargets()` + `renderProgression()`.
-2. ✅ **Weekly check-in tab** — `renderCheckin()`. Auto-fills latest weight, sessions this week, avg energy. Manual progression notes. "Copy for Saturday" copies formatted summary to clipboard. Saves to `weekly_checkins` (upsert by `week_ending`, max 52).
-3. ⬜ **Cardio history** — in History tab, below lift history. Show date, type, duration, intensity, run_ratio from daily logs. `cardio.type` is `"run/walk"` or `"other"` (set via UI).
-4. ✅ **Body comp monthly log** — in Weight tab (`bodyCompBlock()` + `saveBodyComp()`). Input form: date, body_fat_%, visceral_fat_level, muscle_kg, notes (upsert by date). Charts: body fat % + visceral + muscle trends via `lineChart()`. Stored in `body_comp_scans`.
-
-## Lift draft + dashboard (post-Tier-2 UX)
-- **Lift draft persistence** — lift inputs auto-save to `lift_draft` on every keystroke (`saveDraft()`), restored on boot/render, cleared on SAVE. Navigating away from the Lift tab no longer wipes in-progress entries.
-- **Per-set weight** — see Workout entry schema above (`± per-set kg` override).
-- **Progress dashboard** — `dashboardBlock()` in Check-in tab: weight / sessions-per-week / avg-energy trends.
-- **Today notes** save on `oninput` (as-you-type), not `onchange`.
-
-## Hevy-style features (post-dashboard)
-Four feature clusters ported from the Hevy app, all client-side (no backend), single file:
-1. **Rest + workout timers** — Lift tab: sticky rest timer (60/90/120s presets, pause/reset, vibrate +
-   WebAudio beep at zero) and a live workout-duration clock. `startedAt` stamped on first set entry into
-   `lift_draft`; `durationMin` written onto the saved workout and shown in History. Timers are JS-only
-   (intervals no-op when their DOM els are absent, so they survive tab switches).
-2. **RIR per set** — one RIR selector per exercise; stored on each logged set. Anemia guard: RIR 0 → note
-   in the progression card. Shown in History as `· RIR n`.
-3. **PR / 1RM / volume analytics** — `est1RM` (Epley), PR detection on save (badge + toast), per-exercise
-   est-1RM chart in History (`#exChart` + `showExChart`), per-session tonnage in History, weekly volume
-   bar chart in the dashboard. Reuses `lineChart`/`barChart`. No schema change (derived from `workouts`).
-4. **Custom exercises + routines** — `SESSIONS` moved to the editable `routines` LS key (seeded once).
-   Editor in the Backup tab. Routine `type` (upper/lower) drives the progression increment. `sess` falls
-   back to the first routine if its routine was deleted.
-
-## Rep range reference (for progression logic)
-All exercises: 3 sets × 10-12 reps. When all 3 sets hit 12 reps → add weight.
-Weight increments: upper body +2.5kg, lower body +5kg.
+## Progression reference
+All exercises: 3 sets × 10-12 reps. All sets ≥12 reps → add weight (+2.5 kg upper / +5 kg lower, from routine `type`), aim resets to 10,10,10.
