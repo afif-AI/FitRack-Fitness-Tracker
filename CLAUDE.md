@@ -1,8 +1,8 @@
 # FitRack PWA
 
 ## Project
-Single-file PWA fitness tracker (app name: **FitRack**, formerly AFIF/LOG — repo/URL still `afif-log`). One file: `index.html`. Vanilla JS, no build step, no npm, no framework.
-Deployed via GitHub Pages: https://afif-ai.github.io/afif-log/
+Single-file PWA fitness tracker (app name: **FitRack**, formerly AFIF/LOG — repo renamed from `afif-log` to `FitRack-Fitness-Tracker`). One file: `index.html`. Vanilla JS, no build step, no npm, no framework.
+Deployed via GitHub Pages: https://afif-ai.github.io/FitRack-Fitness-Tracker/
 Support files: `manifest.json`, `sw.js`, `icons/` (real PNGs: 192, 512, 512-maskable), `fonts/archivo.woff2` (self-hosted variable font, weights 100–900 — no Google Fonts request).
 
 ## Deploy

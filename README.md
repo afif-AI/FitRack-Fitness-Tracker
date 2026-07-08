@@ -2,7 +2,7 @@
 
 FitRack is a personal fitness tracker PWA (formerly AFIF/LOG). Installs on your phone like a native app, works fully offline, stores everything on-device.
 
-**Live app:** https://afif-ai.github.io/afif-log/
+**Live app:** https://afif-ai.github.io/FitRack-Fitness-Tracker/
 
 ---
 
