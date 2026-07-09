@@ -24,6 +24,7 @@ Two stores:
 ### localStorage keys
 | Key | Type | Content |
 |-----|------|---------|
+| `profile` | Object | `{name, goal_kg?, start_w?}` — user identity + weight goal. Read via `profile()`/`userName()`/`goalKg()`/`startW()` (getters fall back to `GOAL_HIGH`/`START_W` constants). `name` is user input: `sanitizeName` on write, **`esc()` at every render site**. Missing key + existing records = pre-profile install → boot seeds `{name:"Afif"}` silently; missing key + no records → onboarding (`needsOnboarding()`). |
 | `weights` | Array | `{date, kg}[]` ascending by date |
 | `workouts` | Array | `{date, session, entries[], durationMin?}[]` newest-first, **uncapped** |
 | `cardio_sessions` | Array | `{date, type, duration_min, intensity, run_ratio}[]` newest-first, uncapped |
@@ -54,13 +55,16 @@ Cache `fitrack-shell-vN`. Navigations/HTML → **network-first**, cached shell a
 
 ## Tabs (current)
 5 bottom tabs: **Home** (`today`) · **Workout** (`lift`) · **Cardio** (`cardio`) · **History** (`history`) · **Profile** (`profile`).
-Sub-screens: `weight`, `checkin`, `photos`, `settings` (via Profile) · `routines`, `finishgate` (via Workout).
+Sub-screens: `weight`, `checkin`, `photos`, `settings` (via Profile) · `routines`, `finishgate` (via Workout) · `onboard` (first run only, no tab).
 - Nav registry: `RENDERERS`, `TABBAR`, `PROFILE_SUB`, `WORKOUT_SUB`, `TITLES`; history nav via `navStack`/`go()`/`goBack()`/`goForward()`; header built by `renderHeader()`.
-- **Home**: greeting, backup-nudge banner, stat grid (week/streak/month/total), weight card + sparkline, recent sessions.
-- **Workout**: routine cards (locked while another is in progress), per-set kg/reps rows with done-checks, sticky FINISH bar. First set entry stamps `startedAt` and calls `liftActivate()` — a *surgical* DOM insert of the timer bar. **Never full-re-render the lift view from an `oninput` handler** — it replaces the focused input and closes the mobile keyboard.
-- **Finish gate** (`finishgate`): a progress photo is REQUIRED to save a session (`pendingPhoto` → IDB → `commitWorkout()`). Redirects to `lift` if no workout is active.
-- **Cardio**: log form (type/duration/intensity/ratio; draft survives type switches via `cardioDraft`) + history list.
-- **Profile**: hub → Weight (+ body comp), Check-in, Photos, Settings; `dashboardBlock()` charts (weight, sessions/week, volume/week — energy chart removed).
+- **Focus mode**: `chromeHidden()` hides the tab bar during onboarding AND while a workout is active (`workoutStart` set, tab `lift`/`finishgate`). While active, `go()` blocks navigation to anything except `lift`/`finishgate` (toast) and `goBack/goForward` no-op. **Boot must route to `go("lift")` when a draft restored `workoutStart`** — a guarded `go("today")` would no-op and boot blank.
+- **Onboarding** (`onboard`): 3 steps (welcome → name required → optional current/goal weight). Gated by `needsOnboarding()` at boot — checks record stores only (`routines`/`theme` are seeded for everyone before the gate).
+- **Home**: greeting (`userName()`), backup-nudge banner, stat grid (week/streak/month/total), weight card + sparkline, `dashboardBlock()` (moved here from Profile).
+- **Workout**: pre-start = routine selector cards ("tap to select") + explicit **START** CTA (`startWorkout()` stamps `workoutStart`); no exercises rendered until started. Started = focus mode: timer bar, exercise cards, **inline FINISH at scroll bottom** (not floating), red **Discard** in the header (`discardWorkout()`, confirm → clears draft/log/timers). `setLog` is pure state+`saveDraft()` — **never full-re-render the lift view from an `oninput` handler** (replaces the focused input and closes the mobile keyboard).
+- **Finish gate** (`finishgate`): a progress photo is REQUIRED to save a session (`pendingPhoto` → IDB → `commitWorkout()`). Redirects to `lift` if no workout is active. `commitWorkout` clears `workoutStart` BEFORE `go("history")` — required to pass the focus-mode nav guard.
+- **Cardio**: log form (type/duration/intensity/ratio; draft survives type switches via `cardioDraft`) + history list with per-row delete (`delCardio(i)`, index into newest-first array).
+- **History**: collapsible month groups (`histOpen` Set of `YYYY-MM`, newest open by default, `toggleMonth(k)`); per-workout delete (`delWorkout(i)` — **`i` is the absolute index into `workouts`, captured before grouping**); est-1RM chart card on top.
+- **Profile**: tap name/avatar to edit (`editName()`, prompt + `sanitizeName`) → Weight (+ body comp, tap the Start/Goal line for `editGoal()`), Check-in, Photos, Settings (single `.mrow` entry; header gear removed).
 
 ## Timers
 - Rest timer: **wall-clock deadline** (`restEndsAt` epoch; `restPaused` holds remaining seconds while paused). `restRemaining()` derives display time so background throttling can't drift it. `armAudio()` creates/resumes the shared `AudioContext` inside the `restStart`/`restToggle` gesture (iOS blocks audio otherwise); `restDone()` beeps + vibrates.
@@ -92,13 +96,18 @@ Sub-screens: `weight`, `checkin`, `photos`, `settings` (via Profile) · `routine
 | `parseLocal(s)` | "YYYY-MM-DD" → local-midnight Date (use instead of `new Date(str)`) |
 | `esc(s)` | HTML-escape user strings for innerHTML |
 | `weekBounds()` / `weeklySessionCount()` / `latestWeight()` | Week + summary stats |
-| `computeStreak()` / `monthCount()` / `prSessionDates()` | Home stat grid |
+| `computeStreak()` / `monthCount()` | Home stat grid |
+| `profile()` / `userName()` / `goalKg()` / `startW()` | Profile getters (localStorage `profile`, constant fallbacks) |
+| `needsOnboarding()` / `renderOnboard()` / `obNext/obBack/obFinish` | First-run onboarding (gate seeds "Afif" for pre-profile installs) |
+| `editName()` / `editGoal()` | Prompt-based profile edits (Profile hub / Weight screen) |
 | `migrateWorkouts()` / `migrateCardio()` / `migratePhotosToIDB()` | One-shot idempotent boot migrations |
 | `est1RM(w,r)` / `exercisePRs()` / `exerciseSeries(ex)` / `sessionVolume()` / `volumeByWeek(n)` / `sessionsByWeek(n)` | Analytics (derived from `workouts`, no schema) |
-| `chartSVG` / `lineChart` / `barChart` / `sparkSVG` | Inline SVG charts |
+| `chartSVG` / `lineChart` / `barChart` / `sparkSVG` | Inline SVG charts (gradient fills, gridlines, last-point label; `chartGrad()` mints **unique gradient ids per instance** — required, multiple charts render per page; `chartSVG` returns a wrapper div incl. `.chart-meta` row) |
 | `seedRoutines()` / `routines()` / `routineNames()` / `routineExercises(n)` / `routineType(n)` / `exAt(idx)` | Routines layer |
 | `routinesEditor()` + `rtAdd/rtDel/rtType/rtRename/rtExAdd/rtExDel/rtExMove` (index args) | Routines editor screen |
-| `saveDraft()` / `liftActivate()` / `commitWorkout()` | Lift session lifecycle (commit checks `LS.set` result; draft kept on failure) |
+| `saveDraft()` / `startWorkout()` / `discardWorkout()` / `commitWorkout()` | Lift session lifecycle (explicit start; commit checks `LS.set` result; draft kept on failure) |
+| `chromeHidden()` | Tab-bar visibility predicate (onboarding + active workout) |
+| `delWorkout(i)` / `delCardio(i)` / `toggleMonth(k)` | History/Cardio delete + month-group collapse |
 | `restStart/restToggle/restReset` + `restRemaining()`/`updateRestBar()` | Rest timer |
 | `PDB` / `loadPhotos()` / `photosReady` | IndexedDB photo store |
 | `backupNudge()` | Home export-reminder banner |
